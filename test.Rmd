@@ -1,0 +1,90 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+The librarys that we are loading in.
+
+```{r}
+Packages <- c("ggplot2", "dplyr", "stargazer")
+lapply(Packages, library, character.only = TRUE)
+
+```
+Data import
+```{r}
+wind_turbine_data <- read.csv("uswtdb_v6_0_20230531.csv")
+wind_ordinance_data <- read.csv("wind_ordinance_main.csv")
+wind_resource_data <- read.csv("wtk_site_metadata.csv")
+states <- read.csv("states.csv")
+```
+
+Clean wind turbine data
+```{r}
+wind_turbine_main <- wind_turbine_data[complete.cases(wind_turbine_data[, c("eia_id", "p_year", "p_cap", "t_manu", "t_model", "t_cap", "t_hh", "t_rd", "xlong", "ylat")]),]
+wind_turbine_main <- wind_turbine_main[which(wind_turbine_main$p_year >= 2001),]
+wind_turbine_main <- wind_turbine_main[which(!wind_turbine_main$t_state %in% c("AK", "HI")),]
+wind_turbine_main$t_cap <- wind_turbine_main$t_cap/1000
+wind_turbine_main$t_county <- gsub(' County', "", wind_turbine_main$t_county)
+```
+Data inspection 
+```{r}
+wind_project_data <- wind_turbine_main %>% dplyr::group_by(eia_id) %>% dplyr::summarise(p_cap = mean(p_cap), t_cap = mean(t_cap), operating_year = 
+                                                                                          first(p_year), hub_ht = mean(t_hh), rotor_diam = mean(t_rd),
+                                                                                        t_manu = first(t_manu), turbines = n(), t_model = first(t_model),
+                                                                                        state = first(t_state), county = first(t_county))
+wind_project_data
+head(wind_turbine_main)
+```
+Wind ordinance data cleaning
+```{r}
+wind_ordinance_data$X <- NULL
+wind_ordinance_main <- wind_ordinance_data[which(wind_ordinance_data$ordinance_year >= 2001),]
+ordinance_State <- wind_ordinance_main %>% dplyr::group_by(State) %>% dplyr::summarise(tot_ord = n())
+wind_ordinance_main$ordinance <- 1 
+```
+Wind ordinance Grouping
+```{r}
+
+```
+Wind ordinance data cleaning
+```{r}
+wind_resource_main <- wind_resource_data[which(wind_resource_data$power_curve != "offshore"),]
+wind_resource_main <- wind_resource_main[which(!wind_resource_main$State %in% c("Alaska", "Hawaii")),]
+```
+ Merging the datasets
+```{r}
+wind_ordinance_main <- merge(wind_ordinance_main, states, by.x = c("State"), by.y = c("State"), all.x = T)
+turbine_ordinance_merge <- merge(wind_turbine_main, wind_ordinance_main, by.x = c("t_state", "t_county"), by.y = c("Abbreviation", "County"), all.x=T)
+```
+ More merging
+```{r}
+turbine_ordinance_merge$ordinance[is.na(turbine_ordinance_merge$ordinance)] <- 0
+turbine_ordinance_merge$State <- NULL
+
+turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(ordinance_year))
+turbine_ordinance_county <- turbine_ordinance_merge %>% dplyr::group_by(t_state, t_county, p_year) %>% dplyr::summarise(tot_cap = sum(p_cap),
+                                                                                                                        avg_cap = mean(p_cap),
+                                                                                                                        avg_hh = mean(t_hh),
+                                                                                                                        avg_rd = mean(t_rd),
+                                                                                                                        ordinance = mean(ordinance))
+```
+ Lost of bad mmodels
+```{r}
+plot_4_4 <- ggplot() +
+  geom_line(data = turbine_ordinance_county, aes(x = p_year, y = avg_cap, group = factor(ordinance), col = factor(ordinance))) +
+  scale_color_manual(name="", values = c("red", "blue"), labels = c("No ordinance", "Ordinance")) +
+  labs(x="Year", y="Capacity (GW)", title="Avg. wind capacity of counties by ordinance status") +
+  theme_bw()
+plot_4_4
+```
+ 
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
