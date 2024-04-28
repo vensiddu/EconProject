@@ -45,11 +45,7 @@ calculate_mode <- function(x) {
   uniq_x[which.max(tabulate(match(x, uniq_x)))]
 }
 ```
-Data inspection 
-```{r}
-wind_project_data <- wind_turbine_main %>% dplyr::group_by(eia_id) %>% dplyr::summarise(p_cap_avg = mean(p_cap), t_cap_avg = mean(t_cap), operating_year = first(p_year), hub_ht = mean(t_hh), rotor_diam = mean(t_rd),t_manu = calculate_mode(t_manu), turbines = n(), t_model = calculate_mode(t_model),state = first(t_state), county = first(t_county), t_rsa = mean(t_rsa), t_ttlh  = mean(t_ttlh))
-head(wind_project_data)
-```
+
 Wind ordinance data cleaning
 ```{r}
 wind_ordinance_data$X <- NULL
@@ -80,19 +76,12 @@ turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(case_id,f
 turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(usgs_pr_id,eia_id, t_fips))
 turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(p_name,retrofit, retrofit_year,t_img_date,t_img_srce,xlong,ylat))
 ```
-testing
-```{r}
-head(turbine_ordinance_merge)
-```
+
 group By State
 ```{r}
 turbine_ordinance_county <- turbine_ordinance_merge %>% dplyr::group_by(t_state, t_county) %>% dplyr::summarise(tot_cap = sum(t_cap), avg_p_cap = mean(p_cap),avg_hh = mean(t_hh),avg_rd = mean(t_rd),ordinance = mean(ordinance),t_manu = calculate_mode(t_manu), turbines = n(),
 t_model = calculate_mode(t_model),t_rsa = mean(t_rsa),t_ttlh  = mean(t_ttlh),
 avg_t_cap = mean(t_cap))
-```
-testing
-```{r}
-head(turbine_ordinance_county)
 ```
 More merging
 ```{r}
@@ -115,84 +104,6 @@ set.seed(123)  # for reproducibility
 train_indices <- sample(1:nrow(merged_data), 0.7 * nrow(merged_data))  # 70% for training
 train_data <- merged_data[train_indices, ]
 test_data <- merged_data[-train_indices, ]
-```
-Random Forest-Model
-```{r}
-rf_model <- randomForest(tot_cap ~ ., data = train_data)
-```
-Random Forest-results
-```{r}
-predictions <- predict(rf_model, newdata = test_data)
-mse <- mean((predictions - test_data$tot_cap)^2)
-print(paste("Mean Squared Error (MSE):", mse))
-```
-RandOm Forest-Error-Per_perdiction 
-```{r}
-options(scipen = 999)
-se = (predictions - test_data$tot_cap)^2
-prediction_table <- data.frame(Real =test_data$tot_cap, Predicted = predictions, SE = se)
-print(prediction_table)
-```
-
-```{r}
-# Calculate mean
-mean_value <- mean(test_data$tot_cap)
-print(paste("Mean:", mean_value))
-
-# Calculate standard deviation
-sd_value <- sd(test_data$tot_cap)
-print(paste("Standard Deviation:", sd_value))
-```
-
-
-More Random Forest
-```{r}
-# Set up cross-validation parameters
-num_folds <- 5
-control <- trainControl(method = "cv", number = num_folds)
-
-# Initialize variables to store the best model and its MSE
-best_model <- NULL
-best_mse <- Inf
-
-# Define the number of iterations for training
-num_iterations <- 50
-
-# Define other parameters for the random forest
-# Number of trees in the forest
-ntree <- 1000
-# Number of variables to sample for each split
-#mtry <- sqrt(ncol(train_data) - 1) + 2
-mtry <- ncol(train_data) - 5
-
-```
-Loop
-```{r}
-for (i in 1:num_iterations) {
-  # Train the random forest model
-  rf_model <- randomForest(tot_cap ~ ., data = train_data, ntree = ntree, mtry = mtry)
-  
-  # Make predictions on the testing set
-  predictions <- predict(rf_model, newdata = test_data)
-  
-  # Calculate Mean Squared Error (MSE)
-  mse <- mean((predictions - test_data$tot_cap)^2)
-  
-  # Update best model if current model has lower MSE
-  if (mse < best_mse) {
-    best_model <- rf_model
-    best_mse <- mse
-  }
-  
-  # Print MSE for each iteration
-  cat("Iteration", i, "- MSE:", mse, "\n")
-}
-```
-Results
-```{r}
-# Print the final best MSE and best model details
-cat("Best MSE:", best_mse, "\n")
-print(best_model)
 ```
 
 More Random Forest- Cross-Validation
@@ -258,51 +169,9 @@ predictions <- predict(best_model, newdata = test_data)
 mse <- mean((predictions - test_data$tot_cap)^2)
 print(paste("Mean Squared Error (MSE):", mse))
 se = (predictions - test_data$tot_cap)^2
-prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions, SE = se)
+prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions,
+                               SE = se, State = test_data$t_state,County = test_data$t_county)
 print(prediction_table)
 ```
 
-
-Neural Network
-```{r}
-
-# Number of times to run the random forest algorithm
-num_iterations <- 50
-
-# Initialize variables to store best model information
-best_model <- NULL
-best_mse <- Inf
-```
-Loop
-```{r}
-for (i in 1:num_iterations) {
-  # Train the neural network model
-  nn_model <- nnet(tot_cap ~ ., data = train_data, size = 3, decay = 1e-5, maxit = 1000)
-  
-  # Make predictions on the testing set
-  predictions <- predict(nn_model, newdata = test_data)
-  
-  # Calculate Mean Squared Error (MSE)
-  mse <- mean((predictions - test_data$tot_cap)^2)
-  print(mse)
-  # Update best model if current model has lower MSE
-  if (mse < best_mse) {
-    best_model <- nn_model
-    best_mse <- mse
-  }
-}
-```
-Results
-```{r}
-# Print the best model and its MSE
-print("Best Model:")
-print(best_model)
-print(paste("Best MSE:", best_mse))
-```
-
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
-
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
-
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
 
