@@ -97,33 +97,35 @@ merged_data <- merge(merged_data, Area_Final, by.x = c("t_state", "t_county"), b
 
 ```
 
-Random Forest-data split
-```{r}
-# Split the dataset into training and testing sets
-set.seed(123)  # for reproducibility
-train_indices <- sample(1:nrow(merged_data), 0.7 * nrow(merged_data))  # 70% for training
-train_data <- merged_data[train_indices, ]
-test_data <- merged_data[-train_indices, ]
-```
-
 More Random Forest- Cross-Validation
 ```{r}
 # Set seed for reproducibility
-set.seed(123)
+# set.seed(123)
 
 # Split data into training and testing datasets
 index <- createDataPartition(y = merged_data$tot_cap, p = 0.8, list = FALSE)
+merged_data <- merged_data %>% select(-avg_t_cap)
 training_data <- merged_data[index, ]
 test_data <- merged_data[-index, ]
 
 # Initialize variables to store results
 best_model <- NULL
 best_mse <- Inf
+
+all_models <- list()
+all_Index <- list()
 ```
 Loop-- Cross-Validation
 ```{r}
 # Run the model 50 times
 for (i in 1:50) {
+  # Split data into training and testing datasets
+  index <- createDataPartition(y = merged_data$tot_cap, p = 0.8, list = FALSE)
+  training_data <- merged_data[index, ]
+  test_data <- merged_data[-index, ]
+  
+  all_Index[[i]] <- index
+  
   # Prepare the data
   predictors <- training_data[, !names(training_data) %in% c("tot_cap")]
   response <- training_data$tot_cap
@@ -137,7 +139,8 @@ for (i in 1:50) {
   model <- train(x = predictors,       # Predictor variables
                  y = response,         # Response variable
                  method = "rf",        # Random forest method
-                 trControl = ctrl)     # Cross-validation control
+                 trControl = ctrl,     # Cross-validation control
+                 tuneGrid = expand.grid(mtry = c(10)))
 
   # Make predictions on the test dataset
   predictions <- predict(model, newdata = test_data)
@@ -150,6 +153,8 @@ for (i in 1:50) {
     best_model <- model
     best_mse <- mse
   }
+  
+  all_models[[i]] <- model
   # Print MSE for each iteration
   cat("Iteration", i, "- MSE:", mse, "\n")
 }
@@ -173,5 +178,23 @@ prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions
                                SE = se, State = test_data$t_state,County = test_data$t_county)
 print(prediction_table)
 ```
+```{r}
+varImp(best_model)
+```
 
+```{R}
+print(all_models[[4]])
+```
 
+```{r}
+options(scipen = 999)
+i <- 4
+test_data <- merged_data[- all_Index[[i]], ]
+predictions <- predict(all_models[[i]], newdata = test_data)
+mse <- mean((predictions - test_data$tot_cap)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+se = (predictions - test_data$tot_cap)^2
+prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions,
+                               SE = se, State = test_data$t_state,County = test_data$t_county)
+print(prediction_table)
+```
