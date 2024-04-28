@@ -252,7 +252,15 @@ print(best_model)
 # Print the best MSE
 print(paste("Best Mean Squared Error:", best_mse))
 ```
-
+```{r}
+options(scipen = 999)
+predictions <- predict(best_model, newdata = test_data)
+mse <- mean((predictions - test_data$tot_cap)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+se = (predictions - test_data$tot_cap)^2
+prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions, SE = se)
+print(prediction_table)
+```
 
 
 Neural Network
