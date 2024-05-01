@@ -1,0 +1,383 @@
+---
+title: "Final"
+output: html_document
+date: "2024-04-30"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Packages <- c("ggplot2", "dplyr", "stargazer", "randomForest", "nnet", "caret")
+lapply(Packages, library, character.only = TRUE)
+```
+Data import
+```{r}
+wind_turbine_data <- read.csv("uswtdb_v6_0_20230531.csv")
+wind_ordinance_data <- read.csv("wind_ordinance_main.csv")
+wind_resource_data <- read.csv("wtk_site_metadata.csv")
+states <- read.csv("states.csv")
+county_complete <- read.csv("county_complete.csv")
+```
+clean and group wind_resource_data
+```{r}
+wind_resource_data <- wind_resource_data[wind_resource_data$County != "Unknown", ]
+wind_resource_data <- wind_resource_data[wind_resource_data$State != "Unknown", ]
+wind_resource_data <- wind_resource_data %>%
+  group_by(State, County) %>%
+  summarise(across(c(fraction_of_usable_area, capacity, wind_speed, capacity_factor), mean), .groups = 'drop')
+```
+Clean wind turbine data
+```{r}
+wind_turbine_main <- wind_turbine_data[complete.cases(wind_turbine_data[, c("eia_id", "p_year", "p_cap", "t_manu", "t_model", "t_cap", "t_hh", "t_rd", "xlong", "ylat")]),]
+wind_turbine_main <- wind_turbine_main[which(wind_turbine_main$p_year >= 2001),]
+wind_turbine_main <- wind_turbine_main[which(!wind_turbine_main$t_state %in% c("AK", "HI")),]
+wind_turbine_main$t_cap <- wind_turbine_main$t_cap/1000
+wind_turbine_main$t_county <- gsub(' County', "", wind_turbine_main$t_county)
+```
+This is how to get the mode in factoral data
+```{r}
+calculate_mode <- function(x) {
+  uniq_x <- unique(x)
+  uniq_x[which.max(tabulate(match(x, uniq_x)))]
+}
+```
+Data inspection 
+```{r}
+wind_project_data <- wind_turbine_main %>% dplyr::group_by(eia_id) %>% dplyr::summarise(p_cap_avg = mean(p_cap), t_cap_avg = mean(t_cap), operating_year = first(p_year), hub_ht = mean(t_hh), rotor_diam = mean(t_rd),t_manu = calculate_mode(t_manu), turbines = n(), t_model = calculate_mode(t_model),state = first(t_state), county = first(t_county), t_rsa = mean(t_rsa), t_ttlh  = mean(t_ttlh))
+head(wind_project_data)
+```
+ind ordinance data cleaning
+```{r}
+wind_ordinance_data$X <- NULL
+wind_ordinance_main <- wind_ordinance_data[which(wind_ordinance_data$ordinance_year >= 2001),]
+ordinance_State <- wind_ordinance_main %>% dplyr::group_by(State) %>% dplyr::summarise(tot_ord = n())
+wind_ordinance_main$ordinance <- 1 
+wind_resource_data <- wind_resource_data[which(!wind_resource_data$State %in% c("Alaska", "Hawaii")),]
+```
+County Complete geting Aera
+```{r}
+Area <- select(county_complete, state, name, area_2010)
+Area$name <- gsub(' County', "", Area$name)
+```
+ Merging the datasets
+```{r}
+wind_ordinance_main <- merge(wind_ordinance_main, states, by.x = c("State"), by.y = c("State"), all.x = T)
+Area_Final <- merge(Area, states, by.x = "state", by.y = "State", all.x = T)
+wind_resource_Final <- merge(wind_resource_data, states, by.x = c("State"), by.y = c("State"), all.x = T)
+turbine_ordinance_merge <- merge(wind_turbine_main, wind_ordinance_main, by.x = c("t_state", "t_county"), by.y = c("Abbreviation", "County"), all.x=T)
+```
+ More merging
+```{r}
+turbine_ordinance_merge$ordinance[is.na(turbine_ordinance_merge$ordinance)] <- 0
+turbine_ordinance_merge$State <- NULL
+
+turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(ordinance_year))
+turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(case_id,faa_ors,faa_asn))
+turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(usgs_pr_id,eia_id, t_fips))
+turbine_ordinance_merge <- subset(turbine_ordinance_merge, select = -c(p_name,retrofit, retrofit_year,t_img_date,t_img_srce,xlong,ylat))
+```
+group By State
+```{r}
+turbine_ordinance_county <- turbine_ordinance_merge %>% dplyr::group_by(t_state, t_county) %>% dplyr::summarise(tot_cap = sum(t_cap), avg_p_cap = mean(p_cap),avg_hh = mean(t_hh),avg_rd = mean(t_rd),ordinance = mean(ordinance),t_manu = calculate_mode(t_manu), turbines = n(),
+t_model = calculate_mode(t_model),t_rsa = mean(t_rsa),t_ttlh  = mean(t_ttlh),
+avg_t_cap = mean(t_cap))
+```
+More merging
+```{r}
+# Remove the "State" column from wind_resource_Final
+wind_resource_Final <- wind_resource_Final[, !(names(wind_resource_Final) %in% "State")]
+
+# Merge the datasets using Abbreviation and t_state
+merged_data <- merge(turbine_ordinance_county, wind_resource_Final, by.x = c("t_state", "t_county"), by.y = c("Abbreviation", "County"))
+
+Area_Final <- Area_Final[, !(names(Area_Final) %in% "state")]
+
+merged_data <- merge(merged_data, Area_Final, by.x = c("t_state", "t_county"), by.y = c("Abbreviation", "name"))
+```
+Due romove avg_t_cap due to colinarity
+```{r}
+merged_data <- merged_data %>% select(-avg_t_cap)
+```
+Random Forest- Cross-Validation
+```{r}
+# Set seed for reproducibility
+# set.seed(123)
+
+index <- createDataPartition(y = merged_data$tot_cap, p = 0.8, list = FALSE)
+training_data <- merged_data[index, ]
+test_data <- merged_data[-index, ]
+
+# Initialize variables to store results
+best_model <- NULL
+best_mse <- Inf
+```
+Loop-- Cross-Validation
+```{r}
+# Run the model 50 times
+for (i in 1:50) {
+  # Prepare the data
+  predictors <- training_data[, !names(training_data) %in% c("tot_cap")]
+  response <- training_data$tot_cap
+
+  # Set up cross-validation
+  ctrl <- trainControl(method = "cv",    # Cross-validation method
+                       number = 5,       # Number of folds
+                       repeats = 3)      # Number of repetitions
+
+  # Train the random forest model
+  model <- train(x = predictors,       # Predictor variables
+                 y = response,         # Response variable
+                 method = "rf",        # Random forest method
+                 trControl = ctrl,     # Cross-validation control
+                tuneGrid = expand.grid(mtry = c(2,4,6,8,10)))
+
+  # Make predictions on the test dataset
+  predictions <- predict(model, newdata = test_data)
+
+  # Calculate Mean Squared Error (MSE)
+  mse <- mean((predictions - test_data$tot_cap)^2)
+
+  # Check if this model is better than the previous best model
+  if (mse < best_mse) {
+    best_model <- model
+    best_mse <- mse
+  }
+  # Print MSE for each iteration
+  cat("Iteration", i, "- MSE:", mse, "\n")
+}
+
+```
+Results-- Cross-Validation
+```{r}
+# Print the best model
+print(best_model)
+print(best_model$results)
+varImp(best_model, scale = TRUE)
+# Print the best MSE
+print(paste("Best Mean Squared Error:", best_mse))
+```
+
+```{r}
+options(scipen = 999)
+predictions <- predict(best_model, newdata = test_data)
+mse <- mean((predictions - test_data$tot_cap)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+se = (predictions - test_data$tot_cap)^2
+prediction_table <- data.frame(Real = test_data$tot_cap, Predicted = predictions, SE = se)
+print(prediction_table)
+```
+
+
+Modeling for effect of ordinance
+
+Set up for effect models
+```{r}
+# Set seed for reproducibility
+# set.seed(123)
+
+index <- createDataPartition(y = merged_data$tot_cap, p = 0.8, list = FALSE)
+training_data <- merged_data[index, ]
+test_data <- merged_data[-index, ]
+
+contral <- merged_data[merged_data$ordinance == 0,]
+tretment <- merged_data[merged_data$ordinance == 1,]
+```
+Contral Model
+```{r}
+training_data <- contral
+
+# Prepare the data
+predictors <- training_data[, !names(training_data) %in% c("tot_cap")]
+response <- training_data$tot_cap
+
+# Set up cross-validation
+ctrl <- trainControl(method = "cv",    # Cross-validation method
+                    number = 5,       # Number of folds
+                    repeats = 3)      # Number of repetitions
+
+# Train the random forest model
+model_contral <- train(x = predictors,       # Predictor variables
+                y = response,         # Response variable
+                method = "rf",        # Random forest method
+                trControl = ctrl,     # Cross-validation control
+                tuneGrid = expand.grid(mtry = c(10)))
+
+```
+Tretment Model
+```{r}
+# Run the model 50 times
+  # Split data into training and testing datasets
+  training_data <- tretment
+
+  # Prepare the data
+  predictors <- training_data[, !names(training_data) %in% c("tot_cap")]
+  response <- training_data$tot_cap
+
+  # Set up cross-validation
+  ctrl <- trainControl(method = "cv",    # Cross-validation method
+                       number = 5,       # Number of folds
+                       repeats = 3)      # Number of repetitions
+
+  # Train the random forest model
+  model_tretment <- train(x = predictors,       # Predictor variables
+                 y = response,         # Response variable
+                 method = "rf",        # Random forest method
+                 trControl = ctrl,     # Cross-validation control
+                 tuneGrid = expand.grid(mtry = c(10)))
+
+```
+Two model Treatment Effect
+```{r}
+contral$cf_with_treatment <- predict(model_tretment , newdata = contral)
+tretment$cf_with_treatment <- NA
+
+tretment$cf_no_treatment <- predict(model_contral , newdata = tretment)
+contral$cf_no_treatment <- NA
+
+tretment$treatment_effect <- tretment$tot_cap - tretment$cf_no_treatment
+contral$treatment_effect <- contral$cf_with_treatment - contral$tot_cap
+
+contral$cf_no_treatment <- NA
+tretment$cf_with_treatment <- NA
+
+tretment <- tretment[colnames(contral)]
+
+all_data <- rbind(tretment, contral)
+ate <- mean(all_data$treatment_effect, na.rm = TRUE)
+
+treatment_summary <- all_data %>%
+  group_by(ordinance ) %>%
+  summarise(
+    mean_treatment_effect = mean(treatment_effect, na.rm = TRUE),
+    sd_treatment_effect = sd(treatment_effect, na.rm = TRUE),
+    .groups = 'drop'
+)
+```
+The Plot
+```{r}
+ggplot(treatment_summary, aes(x = ordinance, y = mean_treatment_effect, fill = ordinance)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(aes(ymin = mean_treatment_effect - sd_treatment_effect, ymax = mean_treatment_effect + sd_treatment_effect),
+                width = 0.25, position = position_dodge(0.9)) +
+  labs(title = "Treatment Effect by Treatment Status",
+       x = "Treatment Status",
+       y = "Mean Treatment Effect") +
+  theme_minimal()
+
+```
+Single Model treatment Effect
+```{r}
+# Run the model 50 times
+  # Split data into training and testing datasets
+  training_data <- merged_data
+
+  # Prepare the data
+  predictors <- training_data[, !names(training_data) %in% c("tot_cap")]
+  response <- training_data$tot_cap
+
+  # Set up cross-validation
+  ctrl <- trainControl(method = "cv",    # Cross-validation method
+                       number = 5,       # Number of folds
+                       repeats = 3)      # Number of repetitions
+
+  # Train the random forest model
+  model <- train(x = predictors,       # Predictor variables
+                 y = response,         # Response variable
+                 method = "rf",        # Random forest method
+                 trControl = ctrl,     # Cross-validation control
+                 tuneGrid = expand.grid(mtry = c(6)))
+```
+Summary Stats
+```{r}
+summary(model$results)
+options(scipen = 999)
+predictions <- predict(model, newdata = training_data)
+mse <- mean((predictions - training_data$tot_cap)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+se = (predictions - training_data$tot_cap)^2
+prediction_table <- data.frame(Real = training_data$tot_cap, Predicted = predictions, SE = se)
+print(prediction_table)
+varImp(model)
+```
+Oppesite pridictions from one Model
+```{r}
+merged_data <- data.frame(merged_data)
+cf_df <- merged_data
+cf_df <- data.frame(cf_df)
+cf_df$ordinances <- ifelse(cf_df$ordinance == 1, 0, 1)
+
+merged_data$cf_predictions <- predict(model, newdata = cf_df)
+
+
+merged_data$treatment_effect <- ifelse(merged_data$ordinance == 1,
+                              merged_data$tot_cap - merged_data$cf_predictions,
+                              merged_data$tot_cap - merged_data$tot_cap)
+
+merged_data$treatment_effect <- ifelse(merged_data$ordinance == 1,
+                              merged_data$tot_cap- merged_data$cf_predictions,
+                              merged_data$cf_predictions - merged_data$tot_cap)
+```
+Box Plot Trement Effect
+```{r}
+ggplot(merged_data, aes(x = tot_cap, y = cf_predictions, color = factor(ordinance))) +
+  geom_point(alpha = 0.6) +
+  geom_line(aes(x = tot_cap, y = tot_cap), colour = "red", linetype = "dashed") +
+  labs(title = "Actual vs. Counterfactual Total Capacity Predictions", x = "Actual Total Capacity Output", y = "Counterfactual Predicted Total Capacity Output") +
+  scale_color_manual(values = c("blue", "green"), labels = c("No Ordinance", "With Ordinance")) +
+  theme_minimal()
+```
+```{r}
+# Calculate median of treatment effect for each group
+medians <- aggregate(treatment_effect ~ ordinance, data = merged_data, FUN = median)
+
+# Print the results
+print(medians)
+
+```
+Same plot diffrent View Box
+```{r}
+ggplot(merged_data, aes(x = factor(ordinance), y = treatment_effect, fill = factor(ordinance))) +
+  geom_boxplot() +
+  labs(title = "Distribution of Treatment Effects", x = "Group", y = "Treatment Effect") +
+  scale_fill_manual(values = c("blue", "green"), labels = c("No Ordinance", "With Ordinance")) +
+  theme_minimal() + ylim(-30, 30)
+```
+```{r}
+ggplot(merged_data, aes(x = factor(ordinance), y = treatment_effect, fill = factor(ordinance))) +
+  geom_boxplot() +
+  labs(title = "Distribution of Treatment Effects", x = "Group", y = "Treatment Effect") +
+  scale_fill_manual(values = c("blue", "green"), labels = c("No Ordinance", "With Ordinance")) +
+  theme_minimal() + ylim(-200, 200)
+```
+This is a scatter plot
+```{r}
+
+# Plot setup
+plot <- ggplot(merged_data, aes(x = tot_cap, y = cf_predictions, color = factor(ordinance))) +
+  geom_point(alpha = 0.6) +  # Scatter points with partial transparency
+  geom_line(aes(x = tot_cap, y = tot_cap), colour = "red", linetype = "dashed") +  # Reference dashed line
+  # Regression line for x >= 1000
+  geom_smooth(data = subset(merged_data, tot_cap >= 1000), method = "lm", se = FALSE, aes(color = factor(ordinance))) +
+  # Regression line for x < 1000
+  geom_smooth(data = subset(merged_data, tot_cap < 1000), method = "lm", se = FALSE, aes(color = factor(ordinance))) +
+  labs(title = "Actual vs. Counterfactual Total Capacity Predictions", x = "Actual Total Capacity Output", y = "Counterfactual Predicted Total Capacity Output") +
+  scale_color_manual(values = c("black", "purple"), labels = c("No Ordinance", "With Ordinance")) +
+  theme_minimal()
+
+# Print the plot
+print(plot)
+```
+Summary Stats for plot
+```{r}
+# Fit linear model for data where tot_cap >= 1000
+lm_above_1000_no_ordinance <- lm(cf_predictions ~ tot_cap, data = subset(merged_data, tot_cap >= 1000 & ordinance == 0))
+lm_above_1000_with_ordinance <- lm(cf_predictions ~ tot_cap, data = subset(merged_data, tot_cap >= 1000 & ordinance == 1))
+
+# Fit linear model for data where tot_cap < 1000
+lm_below_1000_no_ordinance <- lm(cf_predictions ~ tot_cap, data = subset(merged_data, tot_cap < 1000 & ordinance == 0))
+lm_below_1000_with_ordinance <- lm(cf_predictions ~ tot_cap, data = subset(merged_data, tot_cap < 1000 & ordinance == 1))
+
+# Summarize and extract coefficients
+summary(lm_above_1000_no_ordinance)
+summary(lm_above_1000_with_ordinance)
+summary(lm_below_1000_no_ordinance)
+summary(lm_below_1000_with_ordinance)
+```
